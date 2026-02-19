@@ -229,16 +229,16 @@ class Processor:
             ws = wb[name]
             if ws.max_row < 3:
                 continue
+
             data = []
             for r in range(2, ws.max_row + 1):
                 row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
                 fills = [ws.cell(r, c).fill for c in range(1, len(COLUMNS) + 1)]
                 empleado = str(row_vals[11] or "")
-                fecha = row_vals[0]
-                if isinstance(fecha, datetime):
-                    fecha_dt = fecha
-                else:
-                    fecha_dt = datetime.fromisoformat(str(fecha))
+                fecha_dt = self._coerce_datetime(row_vals[0], sheet_name=name, row_number=r)
+                if fecha_dt is None:
+                    # Mantener la fila pero enviarla al final para no romper el procesamiento.
+                    fecha_dt = datetime.max
                 data.append((empleado.lower(), fecha_dt, row_vals, fills))
 
             data.sort(key=lambda x: (x[0], x[1]))
@@ -252,6 +252,23 @@ class Processor:
                 for c in range(1, len(COLUMNS) + 1):
                     ws.cell(idx, c).value = values[c - 1]
                     ws.cell(idx, c).fill = fills[c - 1]
+
+    def _coerce_datetime(self, value, sheet_name: str, row_number: int):
+        if isinstance(value, datetime):
+            return value
+        if value in (None, ""):
+            self.logger(
+                f"ADVERTENCIA fecha vacía en sheet {sheet_name} fila {row_number}; se mantiene la fila y se ordena al final."
+            )
+            return None
+
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            self.logger(
+                f"ADVERTENCIA fecha inválida '{value}' en sheet {sheet_name} fila {row_number}; se mantiene la fila y se ordena al final."
+            )
+            return None
 
     def _parse_invoice(self, xml_file: Path, empleado: str, source_month: str) -> InvoiceRow:
         doc = etree.parse(str(xml_file))
