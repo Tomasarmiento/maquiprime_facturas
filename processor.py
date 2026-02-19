@@ -109,6 +109,18 @@ class Processor:
 
     @staticmethod
     def _normalize_uuid(value) -> str:
+        normalized = str(value or "").strip().upper()
+        normalized = normalized.replace("{", "").replace("}", "")
+        return normalized
+
+    def run(self, dry_run: bool = False) -> dict:
+        wb = load_workbook(self.excel_path)
+        removed_dupes = self._remove_existing_duplicate_rows(wb)
+        if removed_dupes:
+            self.logger(f"ADVERTENCIA se eliminaron {removed_dupes} filas duplicadas previas por UUID.")
+
+        existing_uuid_positions = self._collect_uuid_positions(wb)
+        existing_uuid_set = {self._normalize_uuid(u) for u in existing_uuid_positions.keys()}
         return str(value or "").strip().upper()
 
     def run(self, dry_run: bool = False) -> dict:
@@ -216,6 +228,41 @@ class Processor:
             "duplicates": duplicate_count,
             "dry_run": dry_run,
         }
+
+    def _remove_existing_duplicate_rows(self, wb) -> int:
+        """Elimina filas duplicadas por UUID en hojas mensuales, conservando la primera ocurrencia global."""
+        seen: set[str] = set()
+        rows_to_delete: dict[str, list[int]] = {}
+
+        for name in wb.sheetnames:
+            if not name.endswith(f" {TARGET_YEAR}"):
+                continue
+
+            ws = wb[name]
+            if ws.max_row < 2:
+                continue
+
+            headers = [ws.cell(1, i + 1).value for i in range(len(COLUMNS))]
+            if headers[: len(COLUMNS)] != COLUMNS:
+                continue
+
+            for row_number in range(2, ws.max_row + 1):
+                uuid_val = self._normalize_uuid(ws.cell(row_number, 5).value)
+                if not uuid_val:
+                    continue
+                if uuid_val in seen:
+                    rows_to_delete.setdefault(name, []).append(row_number)
+                else:
+                    seen.add(uuid_val)
+
+        removed = 0
+        for sheet_name, row_numbers in rows_to_delete.items():
+            ws = wb[sheet_name]
+            for row_number in sorted(row_numbers, reverse=True):
+                ws.delete_rows(row_number, 1)
+                removed += 1
+
+        return removed
 
     def _collect_uuid_positions(self, wb):
         result: dict[str, list[tuple[str, int]]] = {}
