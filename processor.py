@@ -177,6 +177,12 @@ class Processor:
 
         if not dry_run:
             self._apply_duplicates(wb, existing_uuid_positions, new_uuid_positions)
+            try:
+                self._sort_all_month_sheets(wb)
+            except Exception as exc:
+                errors += 1
+                self.logger(f"ERROR ordenando sheets mensuales: {exc}")
+                self.logger("ADVERTENCIA se guardará el Excel sin reordenar por este ciclo.")
             self._sort_all_month_sheets(wb)
             wb.save(self.excel_path)
 

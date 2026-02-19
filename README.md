@@ -15,6 +15,7 @@ Aplicación de escritorio en Python (Tkinter) para usuarios no técnicos.
 - Orden de cada sheet: Empleado (A-Z), luego Fecha (asc).
 - Log de ejecución y errores.
 - Si existen filas previas con fecha vacía o inválida en el Excel, el proceso ya no se detiene: se reporta advertencia y esas filas se ordenan al final.
+- Si por cualquier razón falla el ordenamiento final de hojas, la app registra el error y guarda igualmente los datos insertados (sin reordenar en ese ciclo).
 
 ## ¿Dónde está la URL de `FICHERO_CONTROL_2026.xlsx`?
 No hay URL. Esta versión es **desktop local** y trabaja con la carpeta sincronizada de Dropbox en la computadora.
