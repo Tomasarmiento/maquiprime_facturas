@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -114,6 +115,10 @@ class Processor:
         wb = load_workbook(self.excel_path)
         existing_uuid_positions = self._collect_uuid_positions(wb)
         existing_uuid_set = {self._normalize_uuid(u) for u in existing_uuid_positions.keys()}
+    def run(self, dry_run: bool = False) -> dict:
+        wb = load_workbook(self.excel_path)
+        existing_uuid_positions = self._collect_uuid_positions(wb)
+        existing_uuid_set = set(existing_uuid_positions.keys())
         new_uuid_positions: dict[str, list[tuple[str, int]]] = {}
         inserted = 0
         warnings = 0
@@ -144,6 +149,7 @@ class Processor:
                         continue
 
                     uuid_upper = self._normalize_uuid(row.uuid)
+                    uuid_upper = row.uuid.upper()
                     if uuid_upper in existing_uuid_set:
                         warnings += 1
                         self.logger(f"ADVERTENCIA UUID ya existente, se omite inserción: {row.uuid} ({xml_file.name})")
@@ -184,6 +190,7 @@ class Processor:
                             )
 
                         new_uuid_positions.setdefault(uuid_upper, []).append((ws.title, inserted_row))
+                        new_uuid_positions.setdefault(row.uuid, []).append((ws.title, inserted_row))
                         existing_uuid_set.add(uuid_upper)
 
         if not dry_run:
@@ -194,6 +201,7 @@ class Processor:
                 errors += 1
                 self.logger(f"ERROR ordenando sheets mensuales: {exc}")
                 self.logger("ADVERTENCIA se guardará el Excel sin reordenar por este ciclo.")
+            self._sort_all_month_sheets(wb)
             wb.save(self.excel_path)
 
         duplicate_count = sum(1 for u, pos in new_uuid_positions.items() if len(pos) + len(existing_uuid_positions.get(u, [])) > 1)
@@ -224,6 +232,7 @@ class Processor:
                     norm_uuid = self._normalize_uuid(uuid_val)
                     if norm_uuid:
                         result.setdefault(norm_uuid, []).append((name, r))
+                    result.setdefault(str(uuid_val), []).append((name, r))
         return result
 
     def _apply_duplicates(self, wb, existing, new):
@@ -235,6 +244,7 @@ class Processor:
 
     def _fill_row(self, ws, row_number: int, fill):
         for c in range(1, len(COLUMNS) + 1):
+            ws.cell(row=row_number, column=c).fill = copy(fill)
             ws.cell(row=row_number, column=c).fill = fill
 
     def _ensure_headers(self, ws):
@@ -277,6 +287,34 @@ class Processor:
                     self._fill_row(ws, target_row, YELLOW)
                 elif row_highlight == "RED":
                     self._fill_row(ws, target_row, RED)
+            data = []
+            for r in range(2, ws.max_row + 1):
+                row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
+                row_highlight = self._detect_row_highlight(ws, r)
+                fills = [copy(ws.cell(r, c).fill) for c in range(1, len(COLUMNS) + 1)]
+                fills = [ws.cell(r, c).fill for c in range(1, len(COLUMNS) + 1)]
+                empleado = str(row_vals[11] or "")
+                fecha_dt = self._coerce_datetime(row_vals[0], sheet_name=name, row_number=r)
+                if fecha_dt is None:
+                    # Mantener la fila pero enviarla al final para no romper el procesamiento.
+                    fecha_dt = datetime.max
+                data.append((empleado.lower(), fecha_dt, row_vals, row_highlight))
+                data.append((empleado.lower(), fecha_dt, row_vals, fills))
+
+            data.sort(key=lambda x: (x[0], x[1]))
+
+            for r in range(2, ws.max_row + 1):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(r, c).value = None
+                    ws.cell(r, c).fill = PatternFill(fill_type=None)
+
+            for idx, (_, _, values, row_highlight) in enumerate(data, start=2):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(idx, c).value = values[c - 1]
+                if row_highlight == "YELLOW":
+                    self._fill_row(ws, idx, YELLOW)
+                elif row_highlight == "RED":
+                    self._fill_row(ws, idx, RED)
 
     def _detect_row_highlight(self, ws, row_number: int) -> str | None:
         """Detecta si la fila estaba marcada en amarillo o rojo antes de reordenar."""
@@ -290,6 +328,11 @@ class Processor:
         if "FFF59D" in rgb or "FFF59D" in index:
             return "YELLOW"
         return None
+            for idx, (_, _, values, fills) in enumerate(data, start=2):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(idx, c).value = values[c - 1]
+                    ws.cell(idx, c).fill = copy(fills[c - 1])
+                    ws.cell(idx, c).fill = fills[c - 1]
 
     def _coerce_datetime(self, value, sheet_name: str, row_number: int):
         if isinstance(value, datetime):
@@ -335,6 +378,7 @@ class Processor:
             tfd = complemento.find("tfd:TimbreFiscalDigital", namespaces=ns)
             if tfd is not None:
                 uuid = self._normalize_uuid(tfd.get("UUID", ""))
+                uuid = tfd.get("UUID", "")
 
         serie = root.get("Serie", "")
         folio = root.get("Folio", "")
