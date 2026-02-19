@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -216,6 +217,7 @@ class Processor:
 
     def _fill_row(self, ws, row_number: int, fill):
         for c in range(1, len(COLUMNS) + 1):
+            ws.cell(row=row_number, column=c).fill = copy(fill)
             ws.cell(row=row_number, column=c).fill = fill
 
     def _ensure_headers(self, ws):
@@ -234,12 +236,15 @@ class Processor:
             for r in range(2, ws.max_row + 1):
                 row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
                 row_highlight = self._detect_row_highlight(ws, r)
+                fills = [copy(ws.cell(r, c).fill) for c in range(1, len(COLUMNS) + 1)]
+                fills = [ws.cell(r, c).fill for c in range(1, len(COLUMNS) + 1)]
                 empleado = str(row_vals[11] or "")
                 fecha_dt = self._coerce_datetime(row_vals[0], sheet_name=name, row_number=r)
                 if fecha_dt is None:
                     # Mantener la fila pero enviarla al final para no romper el procesamiento.
                     fecha_dt = datetime.max
                 data.append((empleado.lower(), fecha_dt, row_vals, row_highlight))
+                data.append((empleado.lower(), fecha_dt, row_vals, fills))
 
             data.sort(key=lambda x: (x[0], x[1]))
 
@@ -268,6 +273,11 @@ class Processor:
         if "FFF59D" in rgb or "FFF59D" in index:
             return "YELLOW"
         return None
+            for idx, (_, _, values, fills) in enumerate(data, start=2):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(idx, c).value = values[c - 1]
+                    ws.cell(idx, c).fill = copy(fills[c - 1])
+                    ws.cell(idx, c).fill = fills[c - 1]
 
     def _coerce_datetime(self, value, sheet_name: str, row_number: int):
         if isinstance(value, datetime):
