@@ -110,6 +110,7 @@ class Processor:
     def run(self, dry_run: bool = False) -> dict:
         wb = load_workbook(self.excel_path)
         existing_uuid_positions = self._collect_uuid_positions(wb)
+        existing_uuid_set = set(existing_uuid_positions.keys())
         new_uuid_positions: dict[str, list[tuple[str, int]]] = {}
         inserted = 0
         warnings = 0
@@ -137,6 +138,12 @@ class Processor:
                     if not row.uuid:
                         errors += 1
                         self.logger(f"ERROR UUID vacío en {xml_file}")
+                        continue
+
+                    uuid_upper = row.uuid.upper()
+                    if uuid_upper in existing_uuid_set:
+                        warnings += 1
+                        self.logger(f"ADVERTENCIA UUID ya existente, se omite inserción: {row.uuid} ({xml_file.name})")
                         continue
 
                     target_sheet = f"{MESES_INV[row.fecha.month]} {TARGET_YEAR}"
@@ -174,6 +181,7 @@ class Processor:
                             )
 
                         new_uuid_positions.setdefault(row.uuid, []).append((ws.title, inserted_row))
+                        existing_uuid_set.add(uuid_upper)
 
         if not dry_run:
             self._apply_duplicates(wb, existing_uuid_positions, new_uuid_positions)
