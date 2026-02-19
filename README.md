@@ -13,6 +13,7 @@ Aplicación de escritorio en Python (Tkinter) para usuarios no técnicos.
   - Amarillo: factura en carpeta de mes distinto al de su fecha.
   - Rojo: UUID duplicado (incluye el registro previo y el nuevo).
 - Si el UUID ya existe en el Excel, la app no lo vuelve a insertar (evita duplicados por re-ejecución).
+- La comparación de UUID se hace normalizada (trim + MAYÚSCULAS) para evitar duplicados por diferencias de formato.
 - Orden de cada sheet: Empleado (A-Z), luego Fecha (asc).
 - Log de ejecución y errores.
 - Si existen filas previas con fecha vacía o inválida en el Excel, el proceso ya no se detiene: se reporta advertencia y esas filas se ordenan al final.

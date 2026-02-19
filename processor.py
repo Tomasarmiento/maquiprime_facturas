@@ -107,6 +107,14 @@ class Processor:
         self.excel_path = excel_path
         self.logger = logger
 
+    @staticmethod
+    def _normalize_uuid(value) -> str:
+        return str(value or "").strip().upper()
+
+    def run(self, dry_run: bool = False) -> dict:
+        wb = load_workbook(self.excel_path)
+        existing_uuid_positions = self._collect_uuid_positions(wb)
+        existing_uuid_set = {self._normalize_uuid(u) for u in existing_uuid_positions.keys()}
     def run(self, dry_run: bool = False) -> dict:
         wb = load_workbook(self.excel_path)
         existing_uuid_positions = self._collect_uuid_positions(wb)
@@ -140,6 +148,7 @@ class Processor:
                         self.logger(f"ERROR UUID vacío en {xml_file}")
                         continue
 
+                    uuid_upper = self._normalize_uuid(row.uuid)
                     uuid_upper = row.uuid.upper()
                     if uuid_upper in existing_uuid_set:
                         warnings += 1
@@ -180,6 +189,7 @@ class Processor:
                                 f"ADVERTENCIA mes distinto: {xml_file.name} en carpeta {row.source_month} pero fecha {row.fecha.date()}"
                             )
 
+                        new_uuid_positions.setdefault(uuid_upper, []).append((ws.title, inserted_row))
                         new_uuid_positions.setdefault(row.uuid, []).append((ws.title, inserted_row))
                         existing_uuid_set.add(uuid_upper)
 
@@ -219,6 +229,9 @@ class Processor:
             for r in range(2, ws.max_row + 1):
                 uuid_val = ws.cell(r, 5).value
                 if uuid_val:
+                    norm_uuid = self._normalize_uuid(uuid_val)
+                    if norm_uuid:
+                        result.setdefault(norm_uuid, []).append((name, r))
                     result.setdefault(str(uuid_val), []).append((name, r))
         return result
 
@@ -364,6 +377,7 @@ class Processor:
         if complemento is not None:
             tfd = complemento.find("tfd:TimbreFiscalDigital", namespaces=ns)
             if tfd is not None:
+                uuid = self._normalize_uuid(tfd.get("UUID", ""))
                 uuid = tfd.get("UUID", "")
 
         serie = root.get("Serie", "")
