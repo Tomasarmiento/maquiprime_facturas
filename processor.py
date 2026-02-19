@@ -228,10 +228,38 @@ class Processor:
         for name in wb.sheetnames:
             if not name.endswith(f" {TARGET_YEAR}"):
                 continue
+
             ws = wb[name]
             if ws.max_row < 3:
                 continue
 
+            rows_to_sort: list[tuple[str, datetime, list, str | None]] = []
+            for row_number in range(2, ws.max_row + 1):
+                row_values = [ws.cell(row_number, col).value for col in range(1, len(COLUMNS) + 1)]
+                row_highlight = self._detect_row_highlight(ws, row_number)
+                empleado_key = str(row_values[11] or "").lower()
+                fecha_dt = self._coerce_datetime(row_values[0], sheet_name=name, row_number=row_number)
+                if fecha_dt is None:
+                    # Mantener la fila pero enviarla al final para no romper el procesamiento.
+                    fecha_dt = datetime.max
+
+                rows_to_sort.append((empleado_key, fecha_dt, row_values, row_highlight))
+
+            rows_to_sort.sort(key=lambda item: (item[0], item[1]))
+
+            for row_number in range(2, ws.max_row + 1):
+                for col in range(1, len(COLUMNS) + 1):
+                    ws.cell(row_number, col).value = None
+                    ws.cell(row_number, col).fill = PatternFill(fill_type=None)
+
+            for target_row, (_, _, row_values, row_highlight) in enumerate(rows_to_sort, start=2):
+                for col in range(1, len(COLUMNS) + 1):
+                    ws.cell(target_row, col).value = row_values[col - 1]
+
+                if row_highlight == "YELLOW":
+                    self._fill_row(ws, target_row, YELLOW)
+                elif row_highlight == "RED":
+                    self._fill_row(ws, target_row, RED)
             data = []
             for r in range(2, ws.max_row + 1):
                 row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
