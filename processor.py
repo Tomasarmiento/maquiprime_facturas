@@ -235,6 +235,7 @@ class Processor:
             data = []
             for r in range(2, ws.max_row + 1):
                 row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
+                row_highlight = self._detect_row_highlight(ws, r)
                 fills = [copy(ws.cell(r, c).fill) for c in range(1, len(COLUMNS) + 1)]
                 fills = [ws.cell(r, c).fill for c in range(1, len(COLUMNS) + 1)]
                 empleado = str(row_vals[11] or "")
@@ -242,6 +243,7 @@ class Processor:
                 if fecha_dt is None:
                     # Mantener la fila pero enviarla al final para no romper el procesamiento.
                     fecha_dt = datetime.max
+                data.append((empleado.lower(), fecha_dt, row_vals, row_highlight))
                 data.append((empleado.lower(), fecha_dt, row_vals, fills))
 
             data.sort(key=lambda x: (x[0], x[1]))
@@ -251,6 +253,26 @@ class Processor:
                     ws.cell(r, c).value = None
                     ws.cell(r, c).fill = PatternFill(fill_type=None)
 
+            for idx, (_, _, values, row_highlight) in enumerate(data, start=2):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(idx, c).value = values[c - 1]
+                if row_highlight == "YELLOW":
+                    self._fill_row(ws, idx, YELLOW)
+                elif row_highlight == "RED":
+                    self._fill_row(ws, idx, RED)
+
+    def _detect_row_highlight(self, ws, row_number: int) -> str | None:
+        """Detecta si la fila estaba marcada en amarillo o rojo antes de reordenar."""
+        fill = ws.cell(row=row_number, column=1).fill
+        color = getattr(fill, "start_color", None)
+        rgb = (getattr(color, "rgb", None) or "").upper()
+        index = (getattr(color, "index", None) or "").upper()
+
+        if "EF9A9A" in rgb or "EF9A9A" in index:
+            return "RED"
+        if "FFF59D" in rgb or "FFF59D" in index:
+            return "YELLOW"
+        return None
             for idx, (_, _, values, fills) in enumerate(data, start=2):
                 for c in range(1, len(COLUMNS) + 1):
                     ws.cell(idx, c).value = values[c - 1]
