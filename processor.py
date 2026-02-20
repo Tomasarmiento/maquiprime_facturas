@@ -109,71 +109,80 @@ class Processor:
 
     @staticmethod
     def _normalize_uuid(value) -> str:
-        normalized = str(value or "").strip().upper()
-        normalized = normalized.replace("{", "").replace("}", "")
-        return normalized
+        return str(value or "").strip().upper().replace("{", "").replace("}", "")
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def run(self, dry_run: bool = False) -> dict:
         wb = load_workbook(self.excel_path)
-        removed_dupes = self._remove_existing_duplicate_rows(wb)
-        if removed_dupes:
-            self.logger(f"ADVERTENCIA se eliminaron {removed_dupes} filas duplicadas previas por UUID.")
 
-        existing_uuid_positions = self._collect_uuid_positions(wb)
-        existing_uuid_set = {self._normalize_uuid(u) for u in existing_uuid_positions.keys()}
-        return str(value or "").strip().upper()
-
-    def run(self, dry_run: bool = False) -> dict:
-        wb = load_workbook(self.excel_path)
-        existing_uuid_positions = self._collect_uuid_positions(wb)
-        existing_uuid_set = {self._normalize_uuid(u) for u in existing_uuid_positions.keys()}
-    def run(self, dry_run: bool = False) -> dict:
-        wb = load_workbook(self.excel_path)
+        # Step 1: collect UUIDs already present in the workbook
         existing_uuid_positions = self._collect_uuid_positions(wb)
         existing_uuid_set = set(existing_uuid_positions.keys())
+
+        # Step 2: track UUIDs inserted in this run
         new_uuid_positions: dict[str, list[tuple[str, int]]] = {}
+
         inserted = 0
         warnings = 0
         errors = 0
 
+        # Step 3: iterate month folders → employee folders → XML files
         for month_name, month_num in MESES.items():
             month_folder = self.base_2026 / month_name.capitalize()
             if not month_folder.exists() or not month_folder.is_dir():
                 continue
 
-            for employee_folder in sorted([p for p in month_folder.iterdir() if p.is_dir()], key=lambda p: p.name.lower()):
+            employee_folders = sorted(
+                [p for p in month_folder.iterdir() if p.is_dir()],
+                key=lambda p: p.name.lower(),
+            )
+
+            for employee_folder in employee_folders:
                 for xml_file in sorted(employee_folder.glob("*.xml")):
+                    # --- parse ---
                     try:
                         row = self._parse_invoice(xml_file, employee_folder.name, month_name)
                     except Exception as exc:
                         errors += 1
-                        self.logger(f"ERROR parseando {xml_file}: {exc}")
+                        self.logger(f"ERROR parseando {xml_file.name}: {exc}")
                         continue
 
+                    # --- validate year ---
                     if row.fecha.year != TARGET_YEAR:
                         errors += 1
-                        self.logger(f"ERROR fecha fuera de 2026 ({row.fecha.date()}) en {xml_file}")
+                        self.logger(
+                            f"ERROR fecha fuera de {TARGET_YEAR} ({row.fecha.date()}) en {xml_file.name}"
+                        )
                         continue
 
+                    # --- validate UUID ---
                     if not row.uuid:
                         errors += 1
-                        self.logger(f"ERROR UUID vacío en {xml_file}")
+                        self.logger(f"ERROR UUID vacío en {xml_file.name}")
                         continue
 
-                    uuid_upper = self._normalize_uuid(row.uuid)
-                    uuid_upper = row.uuid.upper()
-                    if uuid_upper in existing_uuid_set:
-                        warnings += 1
-                        self.logger(f"ADVERTENCIA UUID ya existente, se omite inserción: {row.uuid} ({xml_file.name})")
+                    uuid_key = self._normalize_uuid(row.uuid)
+
+                    # --- skip if already in workbook ---
+                    if uuid_key in existing_uuid_set:
+                        self.logger(
+                            f"OMITIDO UUID ya existente: {row.uuid} ({xml_file.name})"
+                        )
                         continue
 
+                    # --- determine target sheet ---
                     target_sheet = f"{MESES_INV[row.fecha.month]} {TARGET_YEAR}"
                     if target_sheet not in wb.sheetnames:
                         ws = wb.create_sheet(target_sheet)
                         self._ensure_headers(ws)
+
                     ws = wb[target_sheet]
                     self._ensure_headers(ws)
 
+                    # --- insert row ---
                     if not dry_run:
                         ws.append(
                             [
@@ -194,77 +203,53 @@ class Processor:
                         inserted_row = ws.max_row
                         inserted += 1
 
+                        # yellow highlight if invoice date doesn't match folder month
                         if row.source_month.lower() != MESES_INV[row.fecha.month].lower():
                             warnings += 1
                             self._fill_row(ws, inserted_row, YELLOW)
                             self.logger(
-                                f"ADVERTENCIA mes distinto: {xml_file.name} en carpeta {row.source_month} pero fecha {row.fecha.date()}"
+                                f"ADVERTENCIA mes distinto: {xml_file.name} "
+                                f"en carpeta '{row.source_month}' pero fecha {row.fecha.date()}"
                             )
 
-                        new_uuid_positions.setdefault(uuid_upper, []).append((ws.title, inserted_row))
-                        new_uuid_positions.setdefault(row.uuid, []).append((ws.title, inserted_row))
-                        existing_uuid_set.add(uuid_upper)
+                        # track for duplicate detection
+                        new_uuid_positions.setdefault(uuid_key, []).append(
+                            (ws.title, inserted_row)
+                        )
+                        # mark as seen so we don't insert the same UUID twice
+                        # even if two XML files in this run share the same UUID
+                        existing_uuid_set.add(uuid_key)
 
+        # Step 4: apply red highlight to any duplicated UUIDs
         if not dry_run:
-            self._apply_duplicates(wb, existing_uuid_positions, new_uuid_positions)
+            dup_count = self._apply_duplicates(wb, existing_uuid_positions, new_uuid_positions)
+            warnings += dup_count
+            if dup_count:
+                self.logger(f"ADVERTENCIA UUIDs duplicados detectados y marcados en rojo: {dup_count}")
+
+            # Step 5: sort each month sheet (employee asc, date asc)
             try:
                 self._sort_all_month_sheets(wb)
             except Exception as exc:
                 errors += 1
-                self.logger(f"ERROR ordenando sheets mensuales: {exc}")
-                self.logger("ADVERTENCIA se guardará el Excel sin reordenar por este ciclo.")
-            self._sort_all_month_sheets(wb)
-            wb.save(self.excel_path)
+                self.logger(f"ERROR ordenando sheets: {exc}")
 
-        duplicate_count = sum(1 for u, pos in new_uuid_positions.items() if len(pos) + len(existing_uuid_positions.get(u, [])) > 1)
-        warnings += duplicate_count
-        if duplicate_count:
-            self.logger(f"ADVERTENCIA UUID duplicados detectados: {duplicate_count}")
+            wb.save(self.excel_path)
 
         return {
             "inserted": inserted,
             "warnings": warnings,
             "errors": errors,
-            "duplicates": duplicate_count,
             "dry_run": dry_run,
         }
 
-    def _remove_existing_duplicate_rows(self, wb) -> int:
-        """Elimina filas duplicadas por UUID en hojas mensuales, conservando la primera ocurrencia global."""
-        seen: set[str] = set()
-        rows_to_delete: dict[str, list[int]] = {}
+    # ------------------------------------------------------------------
+    # UUID helpers
+    # ------------------------------------------------------------------
 
-        for name in wb.sheetnames:
-            if not name.endswith(f" {TARGET_YEAR}"):
-                continue
-
-            ws = wb[name]
-            if ws.max_row < 2:
-                continue
-
-            headers = [ws.cell(1, i + 1).value for i in range(len(COLUMNS))]
-            if headers[: len(COLUMNS)] != COLUMNS:
-                continue
-
-            for row_number in range(2, ws.max_row + 1):
-                uuid_val = self._normalize_uuid(ws.cell(row_number, 5).value)
-                if not uuid_val:
-                    continue
-                if uuid_val in seen:
-                    rows_to_delete.setdefault(name, []).append(row_number)
-                else:
-                    seen.add(uuid_val)
-
-        removed = 0
-        for sheet_name, row_numbers in rows_to_delete.items():
-            ws = wb[sheet_name]
-            for row_number in sorted(row_numbers, reverse=True):
-                ws.delete_rows(row_number, 1)
-                removed += 1
-
-        return removed
-
-    def _collect_uuid_positions(self, wb):
+    def _collect_uuid_positions(self, wb) -> dict[str, list[tuple[str, int]]]:
+        """Return a mapping of normalised UUID → [(sheet_name, row_number)] for every
+        data row already in the workbook."""
         result: dict[str, list[tuple[str, int]]] = {}
         for name in wb.sheetnames:
             ws = wb[name]
@@ -274,129 +259,111 @@ class Processor:
             if headers[: len(COLUMNS)] != COLUMNS:
                 continue
             for r in range(2, ws.max_row + 1):
-                uuid_val = ws.cell(r, 5).value
-                if uuid_val:
-                    norm_uuid = self._normalize_uuid(uuid_val)
-                    if norm_uuid:
-                        result.setdefault(norm_uuid, []).append((name, r))
-                    result.setdefault(str(uuid_val), []).append((name, r))
+                raw = ws.cell(r, 5).value
+                if raw:
+                    key = self._normalize_uuid(raw)
+                    if key:
+                        result.setdefault(key, []).append((name, r))
         return result
 
-    def _apply_duplicates(self, wb, existing, new):
-        for uuid_val, new_positions in new.items():
-            positions = list(existing.get(uuid_val, [])) + new_positions
-            if len(positions) > 1:
-                for sheet, row in positions:
-                    self._fill_row(wb[sheet], row, RED)
+    def _apply_duplicates(
+        self,
+        wb,
+        existing: dict[str, list[tuple[str, int]]],
+        new: dict[str, list[tuple[str, int]]],
+    ) -> int:
+        """Highlight in red every row (old + new) that shares a UUID with another row."""
+        dup_count = 0
+        for uuid_key, new_positions in new.items():
+            all_positions = list(existing.get(uuid_key, [])) + new_positions
+            if len(all_positions) > 1:
+                dup_count += 1
+                for sheet_name, row_num in all_positions:
+                    if sheet_name in wb.sheetnames:
+                        self._fill_row(wb[sheet_name], row_num, RED)
+        return dup_count
 
-    def _fill_row(self, ws, row_number: int, fill):
+    # ------------------------------------------------------------------
+    # Excel helpers
+    # ------------------------------------------------------------------
+
+    def _fill_row(self, ws, row_number: int, fill: PatternFill) -> None:
         for c in range(1, len(COLUMNS) + 1):
             ws.cell(row=row_number, column=c).fill = copy(fill)
-            ws.cell(row=row_number, column=c).fill = fill
 
-    def _ensure_headers(self, ws):
-        for idx, col in enumerate(COLUMNS, start=1):
-            ws.cell(row=1, column=idx, value=col)
+    def _ensure_headers(self, ws) -> None:
+        if ws.cell(1, 1).value != COLUMNS[0]:
+            for idx, col in enumerate(COLUMNS, start=1):
+                ws.cell(row=1, column=idx, value=col)
+        # Always ensure autofilter covers the header row
+        from openpyxl.utils import get_column_letter
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
 
-    def _sort_all_month_sheets(self, wb):
+    def _detect_row_highlight(self, ws, row_number: int) -> str | None:
+        rgb = (
+            getattr(getattr(ws.cell(row=row_number, column=1).fill, "start_color", None), "rgb", "")
+            or ""
+        ).upper()
+        if "EF9A9A" in rgb:
+            return "RED"
+        if "FFF59D" in rgb:
+            return "YELLOW"
+        return None
+
+    def _sort_all_month_sheets(self, wb) -> None:
         for name in wb.sheetnames:
             if not name.endswith(f" {TARGET_YEAR}"):
                 continue
-
             ws = wb[name]
             if ws.max_row < 3:
                 continue
 
-            rows_to_sort: list[tuple[str, datetime, list, str | None]] = []
-            for row_number in range(2, ws.max_row + 1):
-                row_values = [ws.cell(row_number, col).value for col in range(1, len(COLUMNS) + 1)]
-                row_highlight = self._detect_row_highlight(ws, row_number)
-                empleado_key = str(row_values[11] or "").lower()
-                fecha_dt = self._coerce_datetime(row_values[0], sheet_name=name, row_number=row_number)
-                if fecha_dt is None:
-                    # Mantener la fila pero enviarla al final para no romper el procesamiento.
-                    fecha_dt = datetime.max
-
-                rows_to_sort.append((empleado_key, fecha_dt, row_values, row_highlight))
-
-            rows_to_sort.sort(key=lambda item: (item[0], item[1]))
-
-            for row_number in range(2, ws.max_row + 1):
-                for col in range(1, len(COLUMNS) + 1):
-                    ws.cell(row_number, col).value = None
-                    ws.cell(row_number, col).fill = PatternFill(fill_type=None)
-
-            for target_row, (_, _, row_values, row_highlight) in enumerate(rows_to_sort, start=2):
-                for col in range(1, len(COLUMNS) + 1):
-                    ws.cell(target_row, col).value = row_values[col - 1]
-
-                if row_highlight == "YELLOW":
-                    self._fill_row(ws, target_row, YELLOW)
-                elif row_highlight == "RED":
-                    self._fill_row(ws, target_row, RED)
-            data = []
+            # Read all data rows with their highlight state
+            data: list[tuple[str, datetime, list, str | None]] = []
             for r in range(2, ws.max_row + 1):
-                row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
-                row_highlight = self._detect_row_highlight(ws, r)
-                fills = [copy(ws.cell(r, c).fill) for c in range(1, len(COLUMNS) + 1)]
-                fills = [ws.cell(r, c).fill for c in range(1, len(COLUMNS) + 1)]
-                empleado = str(row_vals[11] or "")
-                fecha_dt = self._coerce_datetime(row_vals[0], sheet_name=name, row_number=r)
+                values = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
+                highlight = self._detect_row_highlight(ws, r)
+                empleado = str(values[11] or "").lower()
+                fecha_dt = self._coerce_datetime(values[0], name, r)
                 if fecha_dt is None:
-                    # Mantener la fila pero enviarla al final para no romper el procesamiento.
                     fecha_dt = datetime.max
-                data.append((empleado.lower(), fecha_dt, row_vals, row_highlight))
-                data.append((empleado.lower(), fecha_dt, row_vals, fills))
+                data.append((empleado, fecha_dt, values, highlight))
 
             data.sort(key=lambda x: (x[0], x[1]))
 
+            # Clear and rewrite
             for r in range(2, ws.max_row + 1):
                 for c in range(1, len(COLUMNS) + 1):
                     ws.cell(r, c).value = None
                     ws.cell(r, c).fill = PatternFill(fill_type=None)
 
-            for idx, (_, _, values, row_highlight) in enumerate(data, start=2):
+            for idx, (_, _, values, highlight) in enumerate(data, start=2):
                 for c in range(1, len(COLUMNS) + 1):
                     ws.cell(idx, c).value = values[c - 1]
-                if row_highlight == "YELLOW":
+                if highlight == "YELLOW":
                     self._fill_row(ws, idx, YELLOW)
-                elif row_highlight == "RED":
+                elif highlight == "RED":
                     self._fill_row(ws, idx, RED)
 
-    def _detect_row_highlight(self, ws, row_number: int) -> str | None:
-        """Detecta si la fila estaba marcada en amarillo o rojo antes de reordenar."""
-        fill = ws.cell(row=row_number, column=1).fill
-        color = getattr(fill, "start_color", None)
-        rgb = (getattr(color, "rgb", None) or "").upper()
-        index = (getattr(color, "index", None) or "").upper()
-
-        if "EF9A9A" in rgb or "EF9A9A" in index:
-            return "RED"
-        if "FFF59D" in rgb or "FFF59D" in index:
-            return "YELLOW"
-        return None
-            for idx, (_, _, values, fills) in enumerate(data, start=2):
-                for c in range(1, len(COLUMNS) + 1):
-                    ws.cell(idx, c).value = values[c - 1]
-                    ws.cell(idx, c).fill = copy(fills[c - 1])
-                    ws.cell(idx, c).fill = fills[c - 1]
-
-    def _coerce_datetime(self, value, sheet_name: str, row_number: int):
+    def _coerce_datetime(self, value, sheet_name: str, row_number: int) -> datetime | None:
         if isinstance(value, datetime):
             return value
         if value in (None, ""):
             self.logger(
-                f"ADVERTENCIA fecha vacía en sheet {sheet_name} fila {row_number}; se mantiene la fila y se ordena al final."
+                f"ADVERTENCIA fecha vacía en sheet '{sheet_name}' fila {row_number}; se ordena al final."
             )
             return None
-
         try:
             return datetime.fromisoformat(str(value))
         except ValueError:
             self.logger(
-                f"ADVERTENCIA fecha inválida '{value}' en sheet {sheet_name} fila {row_number}; se mantiene la fila y se ordena al final."
+                f"ADVERTENCIA fecha inválida '{value}' en sheet '{sheet_name}' fila {row_number}; se ordena al final."
             )
             return None
+
+    # ------------------------------------------------------------------
+    # XML parsing
+    # ------------------------------------------------------------------
 
     def _parse_invoice(self, xml_file: Path, empleado: str, source_month: str) -> InvoiceRow:
         doc = etree.parse(str(xml_file))
@@ -419,13 +386,12 @@ class Processor:
         if receptor_rfc != RFC_RECEPTOR_ESPERADO:
             raise ValueError(f"RFC receptor inválido: {receptor_rfc}")
 
-        complemento = root.find("cfdi:Complemento", namespaces=ns)
         uuid = ""
+        complemento = root.find("cfdi:Complemento", namespaces=ns)
         if complemento is not None:
-            tfd = complemento.find("tfd:TimbreFiscalDigital", namespaces=ns)
-            if tfd is not None:
-                uuid = self._normalize_uuid(tfd.get("UUID", ""))
-                uuid = tfd.get("UUID", "")
+            tfd_node = complemento.find("tfd:TimbreFiscalDigital", namespaces=ns)
+            if tfd_node is not None:
+                uuid = self._normalize_uuid(tfd_node.get("UUID", ""))
 
         serie = root.get("Serie", "")
         folio = root.get("Folio", "")
@@ -436,15 +402,17 @@ class Processor:
 
         iva = Decimal("0")
         otros = Decimal("0")
-
         impuestos = root.find("cfdi:Impuestos", namespaces=ns)
         if impuestos is not None:
-            traslados = impuestos.findall("cfdi:Traslados/cfdi:Traslado", namespaces=ns)
-            retenciones = impuestos.findall("cfdi:Retenciones/cfdi:Retencion", namespaces=ns)
-            for tax in list(traslados) + list(retenciones):
-                imp_code = tax.get("Impuesto", "")
+            for tax in impuestos.findall("cfdi:Traslados/cfdi:Traslado", namespaces=ns):
                 amount = Decimal(tax.get("Importe", "0"))
-                if imp_code == "002":
+                if tax.get("Impuesto", "") == "002":
+                    iva += amount
+                else:
+                    otros += amount
+            for tax in impuestos.findall("cfdi:Retenciones/cfdi:Retencion", namespaces=ns):
+                amount = Decimal(tax.get("Importe", "0"))
+                if tax.get("Impuesto", "") == "002":
                     iva += amount
                 else:
                     otros += amount
@@ -471,9 +439,7 @@ class Processor:
 
     def _first_concept_code(self, root, ns) -> str:
         conceptos = root.findall("cfdi:Conceptos/cfdi:Concepto", namespaces=ns)
-        if not conceptos:
-            return ""
-        return conceptos[0].get("ClaveProdServ", "")
+        return conceptos[0].get("ClaveProdServ", "") if conceptos else ""
 
     def _map_category(self, clave: str) -> str:
         if not clave:
