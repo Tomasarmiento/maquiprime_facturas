@@ -2,7 +2,8 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ main ]
+    tags:
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -26,9 +27,8 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --name "ProcesadorFacturasMaquiprime" --hidden-import=lxml.etree --hidden-import=lxml._elementpath --collect-all lxml --collect-all openpyxl app.py
 
-      - name: Upload EXE as artifact
-        uses: actions/upload-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ProcesadorFacturasMaquiprime
-          path: dist/ProcesadorFacturasMaquiprime.exe
-          retention-days: 30
+          files: dist/ProcesadorFacturasMaquiprime.exe
+          name: Procesador Facturas Maquiprime ${{ github.ref_name }}
