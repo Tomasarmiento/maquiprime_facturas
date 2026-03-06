@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,8 @@ from tkinter import filedialog, messagebox
 from processor import Processor
 
 DEFAULT_EXCEL_NAME = "FICHERO_CONTROL_2026.xlsx"
-VERSION = "v1.1"
+VERSION = "v1.2"
+CONFIG_PATH = Path(__file__).parent / ".procesador_config.json"
 
 # ── Brand colours ──────────────────────────────────────────────────────────────
 BLUE        = "#1A3BFF"
@@ -140,6 +142,34 @@ class InvoiceApp(tk.Tk):
         self._stat_errors   = tk.StringVar(value="—")
 
         self._build_ui()
+        self._load_config()
+
+    # ── Config persistence ─────────────────────────────────────────────────────
+
+    def _load_config(self):
+        try:
+            if CONFIG_PATH.exists():
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                base = data.get("base_path", "")
+                excel = data.get("excel_path", "")
+                if base and Path(base).exists():
+                    self.base_var.set(base)
+                    self._log(f"✓ Carpeta base restaurada: {base}")
+                if excel and Path(excel).exists():
+                    self.excel_var.set(excel)
+                    self._log(f"✓ Excel restaurado: {Path(excel).name}")
+        except Exception:
+            pass  # silently ignore corrupt config
+
+    def _save_config(self):
+        try:
+            data = {
+                "base_path": self.base_var.get().strip(),
+                "excel_path": self.excel_var.get().strip(),
+            }
+            CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     # ── UI ─────────────────────────────────────────────────────────────────────
 
@@ -414,6 +444,7 @@ class InvoiceApp(tk.Tk):
         if sel:
             self.base_var.set(sel)
             self._autodetect_excel()
+            self._save_config()
 
     def _pick_excel(self):
         sel = filedialog.askopenfilename(
@@ -422,6 +453,7 @@ class InvoiceApp(tk.Tk):
         )
         if sel:
             self.excel_var.set(sel)
+            self._save_config()
 
     def _autodetect_excel(self):
         base = self.base_var.get().strip()
@@ -432,6 +464,7 @@ class InvoiceApp(tk.Tk):
         if candidate.exists():
             self.excel_var.set(str(candidate))
             self._log(f"✓ Excel autodetectado: {candidate.name}")
+            self._save_config()
         else:
             self._log(f"No se encontró {DEFAULT_EXCEL_NAME} en la carpeta seleccionada.")
 

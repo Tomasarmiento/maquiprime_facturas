@@ -227,12 +227,13 @@ class Processor:
             if dup_count:
                 self.logger(f"ADVERTENCIA UUIDs duplicados detectados y marcados en rojo: {dup_count}")
 
-            # Step 5: sort each month sheet (employee asc, date asc)
+            # Step 5: sort only newly inserted rows at bottom of each sheet
+            # (existing rows and their manual edits/colors are never touched)
             try:
-                self._sort_all_month_sheets(wb)
+                self._sort_new_rows(wb, new_uuid_positions)
             except Exception as exc:
                 errors += 1
-                self.logger(f"ERROR ordenando sheets: {exc}")
+                self.logger(f"ERROR ordenando filas nuevas: {exc}")
 
             wb.save(self.excel_path)
 
@@ -298,6 +299,15 @@ class Processor:
         # Always ensure autofilter covers the header row
         from openpyxl.utils import get_column_letter
         ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
+        # Remove any empty rows immediately below the header
+        # (these can appear from Excel templates or manual edits)
+        r = 2
+        while r <= ws.max_row:
+            row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
+            if all(v is None or str(v).strip() == "" for v in row_vals):
+                ws.delete_rows(r)
+            else:
+                break  # stop at first non-empty row
 
     def _detect_row_highlight(self, ws, row_number: int) -> str | None:
         rgb = (
@@ -310,7 +320,56 @@ class Processor:
             return "YELLOW"
         return None
 
-    def _sort_all_month_sheets(self, wb) -> None:
+    def _sort_new_rows(
+        self,
+        wb,
+        new_uuid_positions: dict[str, list[tuple[str, int]]],
+    ) -> None:
+        """Sort only the newly added rows within each sheet, leaving existing rows untouched.
+
+        For each sheet that received new rows this run, the new rows are read,
+        sorted by (employee, date), then rewritten in place — the existing rows
+        above them are never modified.
+        """
+        # Build per-sheet list of new row numbers
+        sheet_new_rows: dict[str, list[int]] = {}
+        for positions in new_uuid_positions.values():
+            for sheet_name, row_num in positions:
+                sheet_new_rows.setdefault(sheet_name, []).append(row_num)
+
+        for sheet_name, row_numbers in sheet_new_rows.items():
+            if sheet_name not in wb.sheetnames:
+                continue
+            ws = wb[sheet_name]
+            row_numbers_sorted = sorted(row_numbers)
+
+            # Read only the new rows
+            data: list[tuple[str, datetime, list, str | None]] = []
+            for r in row_numbers_sorted:
+                values = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
+                highlight = self._detect_row_highlight(ws, r)
+                empleado = str(values[11] or "").lower()
+                fecha_dt = self._coerce_datetime(values[0], sheet_name, r)
+                if fecha_dt is None:
+                    fecha_dt = datetime.max
+                data.append((empleado, fecha_dt, values, highlight))
+
+            data.sort(key=lambda x: (x[0], x[1]))
+
+            # Rewrite only those rows
+            for r, (_, _, values, highlight) in zip(row_numbers_sorted, data):
+                for c in range(1, len(COLUMNS) + 1):
+                    ws.cell(r, c).value = values[c - 1]
+                if highlight == "YELLOW":
+                    self._fill_row(ws, r, YELLOW)
+                elif highlight == "RED":
+                    self._fill_row(ws, r, RED)
+                else:
+                    # clear fill only on new rows (safe: user hasn't touched them yet)
+                    for c in range(1, len(COLUMNS) + 1):
+                        ws.cell(r, c).fill = PatternFill(fill_type=None)
+
+
         for name in wb.sheetnames:
             if not name.endswith(f" {TARGET_YEAR}"):
                 continue
