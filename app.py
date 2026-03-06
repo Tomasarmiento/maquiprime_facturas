@@ -10,8 +10,20 @@ from tkinter import filedialog, messagebox
 from processor import Processor
 
 DEFAULT_EXCEL_NAME = "FICHERO_CONTROL_2026.xlsx"
-VERSION = "v1.2"
-CONFIG_PATH = Path(__file__).parent / ".procesador_config.json"
+VERSION = "v1.3"
+
+def _config_path() -> Path:
+    """Return a stable path for the config file that works both in dev and
+    when frozen by PyInstaller. Uses %APPDATA%/Maquiprime on Windows."""
+    import sys, os
+    if getattr(sys, "frozen", False):
+        app_data = Path(os.environ.get("APPDATA", str(Path.home()))) / "Maquiprime"
+    else:
+        app_data = Path(__file__).parent
+    app_data.mkdir(parents=True, exist_ok=True)
+    return app_data / "procesador_config.json"
+
+CONFIG_PATH = _config_path()
 
 # ── Brand colours ──────────────────────────────────────────────────────────────
 BLUE        = "#1A3BFF"
