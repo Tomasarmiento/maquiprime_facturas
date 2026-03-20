@@ -184,23 +184,40 @@ class Processor:
 
                     # --- insert row ---
                     if not dry_run:
-                        ws.append(
-                            [
-                                row.fecha,
-                                row.proveedor,
-                                row.proveedor_rfc,
-                                row.folio_factura,
-                                row.uuid,
-                                row.concepto,
-                                float(row.importe),
-                                float(row.iva),
-                                float(row.otros_impuestos),
-                                float(row.total),
-                                row.comentarios,
-                                row.empleado,
+                        # Insert after the last row that has a UUID, so that
+                        # manual rows (sin comprobante, tickets, etc.) always
+                        # stay below the program-generated block.
+                        self._ensure_separator(ws)
+                        insert_at = self._find_insert_position(ws) + 1
+                        ws.insert_rows(insert_at)
+                        data_to_write = [
+                            row.fecha,
+                            row.proveedor,
+                            row.proveedor_rfc,
+                            row.folio_factura,
+                            row.uuid,
+                            row.concepto,
+                            float(row.importe),
+                            float(row.iva),
+                            float(row.otros_impuestos),
+                            float(row.total),
+                            row.comentarios,
+                            row.empleado,
+                        ]
+                        for col_idx, val in enumerate(data_to_write, start=1):
+                            ws.cell(row=insert_at, column=col_idx, value=val)
+                        inserted_row = insert_at
+                        # Shift existing uuid positions down by 1 for this sheet
+                        for key, positions in existing_uuid_positions.items():
+                            existing_uuid_positions[key] = [
+                                (s, r + 1) if s == ws.title and r >= insert_at else (s, r)
+                                for s, r in positions
                             ]
-                        )
-                        inserted_row = ws.max_row
+                        for key, positions in new_uuid_positions.items():
+                            new_uuid_positions[key] = [
+                                (s, r + 1) if s == ws.title and r >= insert_at else (s, r)
+                                for s, r in positions
+                            ]
                         inserted += 1
 
                         # yellow highlight if invoice date doesn't match folder month
@@ -369,6 +386,43 @@ class Processor:
                     for c in range(1, len(COLUMNS) + 1):
                         ws.cell(r, c).fill = PatternFill(fill_type=None)
 
+
+    SEPARATOR = "--- FIN FACTURAS ---"
+
+    def _find_insert_position(self, ws) -> int:
+        """Return the row number just before the separator row.
+        If no separator exists, insert after the last UUID row.
+        If no UUID rows exist, insert at row 2."""
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, 2).value == self.SEPARATOR:
+                return r - 1  # insert before separator
+        # No separator found — fall back to after last UUID row
+        last = 1
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, 5).value:
+                last = r
+        return last
+
+    def _ensure_separator(self, ws) -> None:
+        """Make sure the separator row exists. If not, add it after the last UUID row."""
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, 2).value == self.SEPARATOR:
+                return  # already there
+        # Add it after last UUID row
+        last_uuid = 1
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(r, 5).value:
+                last_uuid = r
+        sep_row = last_uuid + 1
+        ws.insert_rows(sep_row)
+        ws.cell(sep_row, 2).value = self.SEPARATOR
+        from openpyxl.styles import Font, PatternFill, Alignment
+        sep_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        sep_font = Font(bold=True, color="666666", italic=True)
+        for c in range(1, len(COLUMNS) + 1):
+            ws.cell(sep_row, c).fill = sep_fill
+            ws.cell(sep_row, c).font = sep_font
+        ws.cell(sep_row, 2).alignment = Alignment(horizontal="center")
 
     def _coerce_datetime(self, value, sheet_name: str, row_number: int) -> datetime | None:
         if isinstance(value, datetime):
