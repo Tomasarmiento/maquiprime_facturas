@@ -299,15 +299,15 @@ class Processor:
         # Always ensure autofilter covers the header row
         from openpyxl.utils import get_column_letter
         ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
-        # Remove any empty rows immediately below the header
-        # (these can appear from Excel templates or manual edits)
-        r = 2
-        while r <= ws.max_row:
-            row_vals = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
-            if all(v is None or str(v).strip() == "" for v in row_vals):
-                ws.delete_rows(r)
-            else:
-                break  # stop at first non-empty row
+        # Remove ALL empty rows in the sheet (not just at the top).
+        # openpyxl reports rows with only formatting (no value) as non-empty,
+        # so we delete rows where every cell has no value regardless of format.
+        rows_to_delete = []
+        for r in range(2, ws.max_row + 1):
+            if all(ws.cell(r, c).value is None for c in range(1, len(COLUMNS) + 1)):
+                rows_to_delete.append(r)
+        for r in reversed(rows_to_delete):
+            ws.delete_rows(r)
 
     def _detect_row_highlight(self, ws, row_number: int) -> str | None:
         rgb = (
@@ -369,40 +369,6 @@ class Processor:
                     for c in range(1, len(COLUMNS) + 1):
                         ws.cell(r, c).fill = PatternFill(fill_type=None)
 
-
-        for name in wb.sheetnames:
-            if not name.endswith(f" {TARGET_YEAR}"):
-                continue
-            ws = wb[name]
-            if ws.max_row < 3:
-                continue
-
-            # Read all data rows with their highlight state
-            data: list[tuple[str, datetime, list, str | None]] = []
-            for r in range(2, ws.max_row + 1):
-                values = [ws.cell(r, c).value for c in range(1, len(COLUMNS) + 1)]
-                highlight = self._detect_row_highlight(ws, r)
-                empleado = str(values[11] or "").lower()
-                fecha_dt = self._coerce_datetime(values[0], name, r)
-                if fecha_dt is None:
-                    fecha_dt = datetime.max
-                data.append((empleado, fecha_dt, values, highlight))
-
-            data.sort(key=lambda x: (x[0], x[1]))
-
-            # Clear and rewrite
-            for r in range(2, ws.max_row + 1):
-                for c in range(1, len(COLUMNS) + 1):
-                    ws.cell(r, c).value = None
-                    ws.cell(r, c).fill = PatternFill(fill_type=None)
-
-            for idx, (_, _, values, highlight) in enumerate(data, start=2):
-                for c in range(1, len(COLUMNS) + 1):
-                    ws.cell(idx, c).value = values[c - 1]
-                if highlight == "YELLOW":
-                    self._fill_row(ws, idx, YELLOW)
-                elif highlight == "RED":
-                    self._fill_row(ws, idx, RED)
 
     def _coerce_datetime(self, value, sheet_name: str, row_number: int) -> datetime | None:
         if isinstance(value, datetime):
