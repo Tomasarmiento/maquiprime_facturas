@@ -200,12 +200,14 @@ class Processor:
                             float(row.importe),
                             float(row.iva),
                             float(row.otros_impuestos),
-                            float(row.total),
+                            None,  # Total: written as formula below
                             row.comentarios,
                             row.empleado,
                         ]
                         for col_idx, val in enumerate(data_to_write, start=1):
                             ws.cell(row=insert_at, column=col_idx, value=val)
+                        # Write Total as formula
+                        ws.cell(row=insert_at, column=10).value = f"=G{insert_at}+H{insert_at}+I{insert_at}"
                         inserted_row = insert_at
                         # Shift existing uuid positions down by 1 for this sheet
                         for key, positions in existing_uuid_positions.items():
@@ -252,6 +254,8 @@ class Processor:
                 errors += 1
                 self.logger(f"ERROR ordenando filas nuevas: {exc}")
 
+            # Refresh Total formula on every UUID row in every sheet
+            self._refresh_total_formulas(wb)
             wb.save(self.excel_path)
 
         return {
@@ -386,6 +390,21 @@ class Processor:
                     for c in range(1, len(COLUMNS) + 1):
                         ws.cell(r, c).fill = PatternFill(fill_type=None)
 
+
+    def _refresh_total_formulas(self, wb) -> None:
+        """Rewrite =G{n}+H{n}+I{n} in column J for every data row in every sheet
+        (both UUID rows and manual rows like Sin comprobante/Ticket).
+        This corrects any formula drift caused by insert_rows shifting rows."""
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            if ws.max_row < 2:
+                continue
+            for r in range(2, ws.max_row + 1):
+                # Any row that has data in col 1 or col 2 (fecha or proveedor)
+                has_data = ws.cell(r, 1).value or ws.cell(r, 2).value
+                is_separator = ws.cell(r, 2).value == self.SEPARATOR
+                if has_data and not is_separator:
+                    ws.cell(r, 10).value = f"=G{r}+H{r}+I{r}"
 
     SEPARATOR = "--- FIN FACTURAS ---"
 
