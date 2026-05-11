@@ -69,3 +69,8 @@ Desde la interfaz:
 - La columna `Comentarios` se deja vacía.
 - `Empleado` se toma exactamente del nombre de la carpeta.
 - Si `ClaveProdServ` no está mapeado, se guarda el código crudo.
+git add processor.py
+git commit -m "feat: nuevas categorias y formula total"
+git push
+git tag v1.9
+git push origin v1.9

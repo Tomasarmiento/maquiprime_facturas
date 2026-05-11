@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +11,7 @@ from tkinter import filedialog, messagebox
 from processor import Processor
 
 DEFAULT_EXCEL_NAME = "FICHERO_CONTROL_2026.xlsx"
-VERSION = "v1.3"
+VERSION = "v2.0"
 
 def _config_path() -> Path:
     """Return a stable path for the config file that works both in dev and
@@ -136,13 +137,91 @@ class AnimatedBar(tk.Canvas):
         self._job = self.after(16, self._tick)
 
 
+class ScrollableFrame(tk.Frame):
+    """A frame with a vertical scrollbar. Content goes inside .inner."""
+
+    def __init__(self, parent, bg=OFF_WHITE, **kwargs):
+        super().__init__(parent, bg=bg, **kwargs)
+
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.scrollbar = tk.Scrollbar(self, orient="vertical",
+                                      command=self.canvas.yview)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+
+        self._window = self.canvas.create_window(
+            (0, 0), window=self.inner, anchor="nw"
+        )
+        self.canvas.configure(yscrollcommand=self._on_scroll_change)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        # scrollbar is packed/unpacked dynamically depending on content size
+
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Mouse wheel: bind to all so it works anywhere inside this frame
+        self.bind("<Enter>", self._bind_wheel)
+        self.bind("<Leave>", self._unbind_wheel)
+
+    def _on_inner_configure(self, _evt=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._update_scrollbar_visibility()
+
+    def _on_canvas_configure(self, evt):
+        # Make inner frame match canvas width so children stretch horizontally
+        self.canvas.itemconfigure(self._window, width=evt.width)
+        self._update_scrollbar_visibility()
+
+    def _on_scroll_change(self, first, last):
+        self.scrollbar.set(first, last)
+        self._update_scrollbar_visibility()
+
+    def _update_scrollbar_visibility(self):
+        try:
+            first, last = self.canvas.yview()
+        except Exception:
+            return
+        needs_scroll = (last - first) < 1.0
+        is_shown = self.scrollbar.winfo_ismapped()
+        if needs_scroll and not is_shown:
+            self.scrollbar.pack(side="right", fill="y")
+        elif not needs_scroll and is_shown:
+            self.scrollbar.pack_forget()
+
+    def _bind_wheel(self, _evt=None):
+        if sys.platform == "darwin":
+            self.canvas.bind_all("<MouseWheel>", self._on_mousewheel_mac)
+        else:
+            self.canvas.bind_all("<MouseWheel>", self._on_mousewheel_win)
+        # Linux
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel_linux_up)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel_linux_down)
+
+    def _unbind_wheel(self, _evt=None):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel_win(self, evt):
+        self.canvas.yview_scroll(int(-1 * (evt.delta / 120)), "units")
+
+    def _on_mousewheel_mac(self, evt):
+        self.canvas.yview_scroll(int(-1 * evt.delta), "units")
+
+    def _on_mousewheel_linux_up(self, _evt):
+        self.canvas.yview_scroll(-3, "units")
+
+    def _on_mousewheel_linux_down(self, _evt):
+        self.canvas.yview_scroll(3, "units")
+
+
 class InvoiceApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
         self.title("Procesador de Facturas · MAQUIPRIME")
         self.geometry("880x700")
-        self.minsize(760, 600)
+        self.minsize(640, 420)
         self.configure(bg=OFF_WHITE)
 
         self.base_var    = tk.StringVar()
@@ -186,22 +265,32 @@ class InvoiceApp(tk.Tk):
     # ── UI ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        # Header (fixed at top, no scroll)
         self._build_header()
-        body = tk.Frame(self, bg=OFF_WHITE)
+
+        # Footer (fixed at bottom, packed BEFORE the scrollable area
+        # so it always stays visible)
+        self._build_footer()
+
+        # Scrollable middle area for everything else
+        self._scroll = ScrollableFrame(self, bg=OFF_WHITE)
+        self._scroll.pack(fill="both", expand=True)
+
+        body = tk.Frame(self._scroll.inner, bg=OFF_WHITE)
         body.pack(fill="both", expand=True, padx=28, pady=20)
         body.columnconfigure(0, weight=1)
+
         self._build_paths_card(body)
         self._build_options_card(body)
         self._build_stats_row(body)
         self._build_action_area(body)
         self._build_log_area(body)
-        self._build_footer()
 
     # header ───────────────────────────────────────────────────────────────────
 
     def _build_header(self):
         hdr = tk.Frame(self, bg=WHITE, height=62)
-        hdr.pack(fill="x")
+        hdr.pack(fill="x", side="top")
         hdr.pack_propagate(False)
 
         inner = tk.Frame(hdr, bg=WHITE)
@@ -222,7 +311,7 @@ class InvoiceApp(tk.Tk):
                  fg=GRAY_500, bg=WHITE).pack(side="right", pady=14)
 
         # blue accent line
-        tk.Frame(self, bg=BLUE, height=3).pack(fill="x")
+        tk.Frame(self, bg=BLUE, height=3).pack(fill="x", side="top")
 
     # helpers ──────────────────────────────────────────────────────────────────
 
@@ -384,6 +473,8 @@ class InvoiceApp(tk.Tk):
 
     def _build_log_area(self, parent):
         log_card = tk.Frame(parent, bg=BLUE_DEEP)
+        # Give the log a sensible minimum so even inside a scrollable area
+        # it shows a few lines comfortably.
         log_card.pack(fill="both", expand=True)
 
         log_hdr = tk.Frame(log_card, bg="#0D1F80")
@@ -404,6 +495,7 @@ class InvoiceApp(tk.Tk):
             padx=16, pady=12,
             state="disabled",
             cursor="arrow",
+            height=10,
         )
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config("ok",   foreground="#4ade80")
@@ -415,6 +507,8 @@ class InvoiceApp(tk.Tk):
     # footer ───────────────────────────────────────────────────────────────────
 
     def _build_footer(self):
+        # Footer is packed at the bottom BEFORE the scrollable middle area
+        # in _build_ui, so it never gets pushed off screen.
         tk.Frame(self, bg=GRAY_100, height=1).pack(fill="x", side="bottom")
         ft = tk.Frame(self, bg=WHITE, height=34)
         ft.pack(fill="x", side="bottom")
